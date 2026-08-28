@@ -9,7 +9,7 @@
 
   const K = {
     clients:'sigraf_clients_v2', services:'sigraf_services_v2', sales:'sigraf_sales_v2', cash:'sigraf_cash_v2',
-    settings:'sigraf_settings_v2', auth:'sigraf_auth_v2'
+    settings:'sigraf_settings_v2'
   };
 
   const todayISO = () => new Date().toISOString().slice(0,10);
@@ -31,6 +31,14 @@
     if(!res.ok) throw new Error('Falha na API');
     return res.json();
   }
+  async function checkSession(){
+    try {
+      const session = await api('/api/session');
+      return !!session.logged;
+    } catch {
+      return false;
+    }
+  }
   async function loadDatabase(){
     try {
       const data = await api('/api/state');
@@ -40,7 +48,6 @@
         if(databaseKeys.has(key) && Array.isArray(data[key])) write(K[key], data[key]);
       }
       if(databaseKeys.has('settings') && data.settings) write(K.settings, data.settings);
-      if(databaseKeys.has('auth') && data.auth) write(K.auth, data.auth);
       return true;
     } catch {
       databaseOnline = false;
@@ -54,12 +61,6 @@
       databaseOnline = false;
       toast('Sem conexão com o banco. Dados salvos neste navegador.', 'error');
     });
-  }
-  function hashPassword(text){
-    let h=2166136261;
-    const s=String(text ?? '');
-    for(let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h,16777619); }
-    return ('00000000'+(h>>>0).toString(16)).slice(-8);
   }
   function download(blob,name){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),500); }
 
@@ -82,7 +83,7 @@
   };
 
   let state = {
-    page:'dashboard', logged:sessionStorage.getItem('sigraf_logged_v2')==='1', sidebar:false,
+    page:'dashboard', logged:false, sidebar:false,
     clients:[],services:[],sales:[],cash:[], settings:{businessName:'Sigraf Gráfica',adminName:'Administrador'}
   };
 
@@ -126,18 +127,11 @@
     if(!localStorage.getItem(K.sales)) write(K.sales,demo.sales);
     if(!localStorage.getItem(K.cash)) write(K.cash,demo.cash);
     if(!localStorage.getItem(K.settings)) write(K.settings,{businessName:'Sigraf Gráfica',adminName:'Administrador'});
-    await loadDatabase();
-    {
-      const existingAuth = read(K.auth,null);
-      if(!existingAuth || !existingAuth.username || !existingAuth.passwordHash){
-        persistByStorageKey(K.auth,{username:'admin',passwordHash:hashPassword('sigraf123'),hashType:'local-v1'});
-      } else if(String(existingAuth.passwordHash).length===64 && !existingAuth.hashType){
-        persistByStorageKey(K.auth,{username:'admin',passwordHash:hashPassword('sigraf123'),hashType:'local-v1'});
-      }
-    }
+    state.logged = await checkSession();
+    if(state.logged) await loadDatabase();
     loadState();
     if(databaseOnline){
-      for(const key of ['clients','services','sales','cash','settings','auth']){
+      for(const key of ['clients','services','sales','cash','settings']){
         if(!databaseKeys.has(key)) saveDatabase(key,state[key] ?? read(K[key], null));
       }
     }
@@ -159,18 +153,17 @@
         <div class="login-brand"><img src="${LOGO_SRC}" alt="Sigraf"><span>Gestão gráfica inteligente</span></div>
         <div class="login-box"><span class="eyebrow">PAINEL ADMINISTRATIVO</span><h1>Bem-vindo de volta.</h1><p>Entre para gerenciar serviços, caixa, vendas e clientes em um só lugar.</p>
           <form id="loginForm" class="login-form">
-            <label class="field"><span>Usuário</span><input id="loginUser" value="admin" autocomplete="username" required></label>
+            <label class="field"><span>Usuário</span><input id="loginUser" autocomplete="username" required></label>
             <label class="field"><span>Senha</span><div class="password"><input id="loginPass" type="password" placeholder="Digite sua senha" autocomplete="current-password" required><button class="eye-btn" type="button" id="togglePass">${icon('eye','sm')}</button></div></label>
             <div class="error-box hidden" id="loginError">Usuário ou senha inválidos.</div>
             <button class="btn primary login-submit">Entrar no painel ${icon('chevron','sm')}</button>
           </form>
-          <div class="login-help"><b>Acesso inicial:</b> admin / sigraf123</div>
         </div>
       </section>
       <aside class="login-art"><div class="login-art-content"><span class="login-pill">SIGRAF GESTÃO</span><h2>Controle sua gráfica com <span>clareza e velocidade.</span></h2><p>Financeiro, produção, clientes e vendas conectados em uma experiência simples, moderna e profissional.</p><div class="art-stats"><div class="art-stat"><b>100%</b><small>RESPONSIVO</small></div><div class="art-stat"><b>24h</b><small>DISPONÍVEL</small></div><div class="art-stat"><b>1 painel</b><small>TODA OPERAÇÃO</small></div></div></div></aside>
     </div>`;
     $('#togglePass').onclick=()=>{ const p=$('#loginPass'); const show=p.type==='password';p.type=show?'text':'password';$('#togglePass').innerHTML=icon(show?'eyeoff':'eye','sm'); };
-    $('#loginForm').onsubmit=async e=>{e.preventDefault();const auth=read(K.auth,{});const hash=hashPassword($('#loginPass').value);if($('#loginUser').value===auth.username&&hash===auth.passwordHash){sessionStorage.setItem('sigraf_logged_v2','1');state.logged=true;render();}else $('#loginError').classList.remove('hidden');};
+    $('#loginForm').onsubmit=async e=>{e.preventDefault();try{await api('/api/login',{method:'POST',body:JSON.stringify({username:$('#loginUser').value.trim(),password:$('#loginPass').value})});state.logged=true;await loadDatabase();loadState();render();}catch{$('#loginError').classList.remove('hidden');}};
   }
 
   function navItems(){ return [
@@ -185,7 +178,7 @@
     renderPage();
   }
   function go(page){state.page=page;state.sidebar=false;renderShell();window.scrollTo(0,0);}
-  function logout(){sessionStorage.removeItem('sigraf_logged_v2');state.logged=false;render();}
+  function logout(){api('/api/logout',{method:'POST'}).catch(()=>{});state.logged=false;render();}
 
   function pageTitle(title,subtitle,ico,button=''){return `<div class="page-title"><div><span class="eyebrow">GESTÃO SIGRAF</span><h1>${ico?icon(ico,'lg'):''}${esc(title)}</h1><p>${esc(subtitle)}</p></div>${button}</div>`;}
   function panelHead(title,ico,action='',actionId=''){return `<div class="panel-head"><div class="panel-title">${icon(ico,'sm')}<h3>${esc(title)}</h3></div>${action?`<button class="panel-link" id="${actionId}">${esc(action)}${icon('chevron','sm')}</button>`:''}</div>`;}
@@ -258,10 +251,8 @@
   }
 
   function renderSettings(){
-    const auth=read(K.auth,{username:'admin'});
-    $('#content').innerHTML=pageTitle('Configurações','Personalize acesso, identidade e backups do sistema.','settings')+`<div class="settings-grid"><section class="panel settings-card">${panelHead('Empresa','building')}<label>Nome da empresa<input id="setBusiness" value="${esc(state.settings.businessName)}"></label><label>Nome exibido no painel<input id="setAdmin" value="${esc(state.settings.adminName)}"></label><button class="btn primary" id="saveProfile">${icon('save','sm')} Salvar identidade</button></section><section class="panel settings-card">${panelHead('Segurança','users')}<label>Usuário de acesso<input id="setUser" value="${esc(auth.username)}"></label><label>Nova senha<input id="setPass" type="password" placeholder="Digite uma nova senha"></label><button class="btn primary" id="saveAuth">${icon('save','sm')} Atualizar login</button><p class="warning">${icon('warning','sm')} Quando o servidor estiver rodando, os dados são sincronizados com o banco SQLite.</p></section><section class="panel settings-card">${panelHead('Backup','download')}<p>Exporte todos os clientes, serviços, vendas e caixa em um único arquivo JSON.</p><div class="settings-actions"><button class="btn primary" id="backupBtn">${icon('download','sm')} Exportar backup</button><label class="btn file-btn">${icon('upload','sm')} Restaurar backup<input id="restoreFile" type="file" accept="application/json"></label></div></section><section class="panel settings-card danger-panel">${panelHead('Restaurar demonstração','refresh')}<p>Substitui os dados atuais pelos registros de exemplo originais do sistema.</p><button class="btn danger" id="resetDemo">${icon('refresh','sm')} Restaurar dados</button></section></div>`;
+    $('#content').innerHTML=pageTitle('Configurações','Personalize acesso, identidade e backups do sistema.','settings')+`<div class="settings-grid"><section class="panel settings-card">${panelHead('Empresa','building')}<label>Nome da empresa<input id="setBusiness" value="${esc(state.settings.businessName)}"></label><label>Nome exibido no painel<input id="setAdmin" value="${esc(state.settings.adminName)}"></label><button class="btn primary" id="saveProfile">${icon('save','sm')} Salvar identidade</button></section><section class="panel settings-card">${panelHead('Segurança','users')}<p>Acesso gerenciado no servidor pela variável SIGRAF_USERS.</p><p class="warning">${icon('warning','sm')} Quando o servidor estiver rodando, os dados são sincronizados com o banco SQLite.</p></section><section class="panel settings-card">${panelHead('Backup','download')}<p>Exporte todos os clientes, serviços, vendas e caixa em um único arquivo JSON.</p><div class="settings-actions"><button class="btn primary" id="backupBtn">${icon('download','sm')} Exportar backup</button><label class="btn file-btn">${icon('upload','sm')} Restaurar backup<input id="restoreFile" type="file" accept="application/json"></label></div></section><section class="panel settings-card danger-panel">${panelHead('Restaurar demonstração','refresh')}<p>Substitui os dados atuais pelos registros de exemplo originais do sistema.</p><button class="btn danger" id="resetDemo">${icon('refresh','sm')} Restaurar dados</button></section></div>`;
     $('#saveProfile').onclick=()=>{state.settings={...state.settings,businessName:$('#setBusiness').value.trim()||'Sigraf Gráfica',adminName:$('#setAdmin').value.trim()||'Administrador'};persist('settings');toast('Identidade salva.');renderShell();};
-    $('#saveAuth').onclick=async()=>{const user=$('#setUser').value.trim(),pass=$('#setPass').value;if(!user||!pass){toast('Informe usuário e nova senha.','error');return;}persistByStorageKey(K.auth,{username:user,passwordHash:hashPassword(pass),hashType:'local-v1'});$('#setPass').value='';toast('Login atualizado com sucesso.');};
     $('#backupBtn').onclick=()=>{const data={version:2,exportedAt:new Date().toISOString(),settings:state.settings,clients:state.clients,services:state.services,sales:state.sales,cash:state.cash};download(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),`sigraf-backup-${todayISO()}.json`);toast('Backup exportado.');};
     $('#restoreFile').onchange=e=>{const file=e.target.files?.[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{const d=JSON.parse(r.result);if(!Array.isArray(d.clients)||!Array.isArray(d.services)||!Array.isArray(d.sales)||!Array.isArray(d.cash))throw new Error();if(confirmBox('Restaurar este backup? Os dados atuais serão substituídos.')){state.clients=d.clients;state.services=d.services;state.sales=d.sales;state.cash=d.cash;if(d.settings)state.settings=d.settings;persist('clients');persist('services');persist('sales');persist('cash');persist('settings');toast('Backup restaurado.');renderShell();}}catch{toast('Arquivo de backup inválido.','error');}};r.readAsText(file);};
     $('#resetDemo').onclick=()=>{if(confirmBox('ATENÇÃO: apagar dados atuais e restaurar demonstração?')){state.clients=structuredClone(demo.clients);state.services=structuredClone(demo.services);state.sales=structuredClone(demo.sales);state.cash=structuredClone(demo.cash);persist('clients');persist('services');persist('sales');persist('cash');toast('Dados de demonstração restaurados.');renderSettings();}};
