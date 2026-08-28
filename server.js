@@ -43,6 +43,25 @@ function loadUsers() {
 
 const users = loadUsers();
 
+function getUserPasswordHash(db, username) {
+  const stmt = db.prepare('SELECT password_hash FROM app_users WHERE username = ?');
+  stmt.bind([username]);
+  const row = stmt.step() ? stmt.getAsObject() : null;
+  stmt.free();
+  return row?.password_hash || users.get(username) || null;
+}
+
+function setUserPasswordHash(db, username, passwordHash) {
+  db.run(`
+    INSERT INTO app_users (username, password_hash, updated_at)
+    VALUES (?, ?, datetime('now'))
+    ON CONFLICT(username) DO UPDATE SET
+      password_hash = excluded.password_hash,
+      updated_at = datetime('now')
+  `, [username, passwordHash]);
+  saveDatabase(db);
+}
+
 function readCookies(header = '') {
   return Object.fromEntries(header.split(';').map(part => {
     const [name, ...value] = part.trim().split('=');
@@ -154,6 +173,13 @@ async function main() {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  db.run(`
+    CREATE TABLE IF NOT EXISTS app_users (
+      username TEXT PRIMARY KEY,
+      password_hash TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
   saveDatabase(db);
 
   app.set('trust proxy', 1);
@@ -168,7 +194,7 @@ async function main() {
 
     const username = String(req.body?.username || '').trim();
     const passwordHash = hashPassword(req.body?.password || '');
-    const expectedHash = users.get(username);
+    const expectedHash = getUserPasswordHash(db, username);
 
     if (!expectedHash || passwordHash !== expectedHash) {
       res.status(401).json({ error: 'Usuário ou senha inválidos.' });
@@ -188,6 +214,26 @@ async function main() {
 
   app.post('/api/logout', (_req, res) => {
     res.clearCookie(sessionCookie, { path: '/' });
+    res.json({ ok: true });
+  });
+
+  app.post('/api/change-password', requireAuth, (req, res) => {
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+    const username = req.session.username;
+    const expectedHash = getUserPasswordHash(db, username);
+
+    if (!expectedHash || hashPassword(currentPassword) !== expectedHash) {
+      res.status(401).json({ error: 'Senha atual inválida.' });
+      return;
+    }
+
+    if (newPassword.length < 6) {
+      res.status(400).json({ error: 'A nova senha deve ter pelo menos 6 caracteres.' });
+      return;
+    }
+
+    setUserPasswordHash(db, username, hashPassword(newPassword));
     res.json({ ok: true });
   });
 
